@@ -15,10 +15,19 @@ defines "expected variability" (a taxon, a treatment, a taxon x treatment
 combination, ...), trait bounds, and thresholds. The comparison logic here
 is general; what counts as a sampling unit or a plausible value is not.
 
+> **Physical bounds and literature bounds are not the same thing**
+> (Henry, 2026-09-23). Only *physically impossible* values — %C outside
+> 0–100, a water-content fraction ≥ 1 — are candidates for removal. A
+> literature or TRY range is **flag-only, always**: this lab works with very
+> diverse material, and a true value outside TRY's compiled range is not
+> surprising. Keep the two in separate tables in the project config, and
+> never put a literature-sourced trait in `removal_policy`.
+
 - **Trait QC** (`R/trait_qc.R`):
-  1. `qc_hard_bounds()` -- flag values outside a physically-possible or
-     literature-supported range (mis-entered data: decimal shifts, sign
-     errors, unit mismatches).
+  1. `qc_hard_bounds()` -- flag values outside a bound. Used for both bound
+     types; what differs is the project's policy on what happens next (see
+     the note above). Catches mis-entered data: decimal shifts, sign errors,
+     unit mismatches.
   2. `qc_bad_single_measure()` / `qc_bad_ratio_component()` -- flag a
      replicate measurement (or a ratio trait's raw component) that's off
      by a large factor from the leave-one-out median of its own sampling
@@ -34,8 +43,11 @@ is general; what counts as a sampling unit or a plausible value is not.
      traits expected to strongly covary (e.g. N vs. LMA); flags points far
      from the fit. Flag-only.
   6. `qc_try_bounds()` (`R/try_reference.R`) -- pulls min/max literature
-     ranges for a set of traits out of a bulk TRY database export, for use
-     as `qc_hard_bounds()` input.
+     ranges for a set of traits out of a bulk TRY database export, to be
+     used as **flag-only** bounds. Never feed these into a removal policy
+     (see the note above). Check `UnitName` on what comes back: some TRY
+     `TraitName`s pool incompatible units in `StdValue`, which produces a
+     meaningless range if you take min/max blindly.
 
 - **Spectral QC** (`R/spectral_qc.R`) -- for contact-probe / press-apparatus
   reflectance spectra (not field/canopy spectroscopy). No prior internal
@@ -47,14 +59,45 @@ is general; what counts as a sampling unit or a plausible value is not.
   2. `qc_spectral_out_of_range()` -- flags physically-impossible
      reflectance values.
   3. `qc_spectral_group_outliers()` -- flags spectra whose *shape* (via
-     spectral angle from the group median spectrum) is a robust outlier
-     within their own group. Deliberately not PCA-based -- built for
-     small replicate counts per group (e.g. 6), where per-group PCA is
+     spectral angle) is a robust outlier within their own group. The
+     reference is always a **real measured scan**, picked either as the
+     `medoid` (smallest summed angle to the others — best for controlled
+     lab settings) or by `albedo` (the scan closest to the group's median
+     brightness — expected to matter more for fresh-leaf and field work).
+     Set `reference` per project; the method and the scan used are both
+     returned so they land in the QC log. Deliberately not PCA-based —
+     built for small replicate counts per group, where per-group PCA is
      underpowered.
+  4. `qc_spectral_band_threshold()` -- flags spectra whose reflectance at
+     one band (or averaged over a band range) is implausible. The SHIFT
+     dried-ground DAAC product drops everything with R350 ≥ 0.9; dry leaf
+     powder sits far below that, so a value that high means the white
+     reference or an empty puck got measured. More direct than
+     `qc_spectral_flat()` for that specific failure — keep both.
+  5. `qc_spectral_pca_flags()` -- flags spectra **for manual review** at two
+     levels: each replicate against its own sample centroid, and each sample
+     centroid against its group's. The PCA is fit **once over the whole
+     dataset** and both levels are measured in that shared space, which is
+     what makes it work on thin replicate sets. Distances use the top `n_pc`
+     components scaled by their global MAD; z-scores are pooled across all
+     replicates/samples, because a single group is far too small to
+     robust-z within. Review-only — never wire this to a removal policy.
+  6. `qc_spectral_splice_jump()` -- flags unusually large steps at detector
+     boundaries, measured **before** jump correction (afterwards the
+     evidence is gone by construction). Matters most for field spectra,
+     where detector temperature moves the jumps. `qc_detect_jump_corrected()`
+     tells you whether a file has already been corrected — a
+     boundary-matching correction leaves `R(splice) == R(splice+1)` exactly,
+     which is otherwise vanishingly rare. **A file named "raw" is not
+     necessarily uncorrected; check before trusting it.**
+     `qc_splice_defaults()` holds ASD and SVC/.sig boundaries and treats
+     `"svc"` and `"sig"` as the same instrument.
 
   **Known gap** (Henry, 2026-09-20): the most useful spectral check would
   be a moisture-index-style flag for incomplete drying, but validating one
-  needs a dataset this hasn't had yet. Not attempted here.
+  needs a dataset this hasn't had yet. An experiment to produce that
+  dataset is designed (paired oven trays, one scanned and one weighed) but
+  not yet run — see the Mill Test CLAUDE.md. Not attempted here.
 
 - **Reporting/provenance** (`R/qc_report.R`): `qc_write_log()`,
   `qc_build_report()` (a per-check counts summary -- deliberately does
