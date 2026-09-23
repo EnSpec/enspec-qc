@@ -272,7 +272,56 @@ qc_blank_drift <- function(df, id_cols, tare_col, step_cols,
     arrange(desc(pmax(pct_change_from_tare, pct_change_from_previous, na.rm = TRUE)))
 }
 
-# ---- 7. Trait-trait covariation flag ---------------------------------------
+# ---- 7. Sequential-assay cascade -------------------------------------------
+
+#' Propagate a failure forward through a sequential assay.
+#'
+#' Some assays produce their traits in a fixed order, each stage operating on
+#' the residue of the last -- ANKOM fiber (NDF, then ADF on the NDF residue,
+#' then ADL on the ADF residue) being the motivating case. When an early
+#' stage fails, every trait derived after it is suspect, whether or not its
+#' own value looks reasonable. Judging each trait in isolation misses that
+#' entirely (Henry, 2026-09-23).
+#'
+#' This is deliberately precautionary: it flags on position in the chain, not
+#' on evidence that the downstream value is itself wrong. Depending on how a
+#' given assay's arithmetic actually wires up, a downstream trait may be
+#' untouched by the upstream failure -- so treat these as "look at this",
+#' and check the assay's formulas before removing anything on this basis.
+#'
+#' @param failed_flags flag table for the traits already known to have failed
+#' @param chain trait names IN PROCESSING ORDER
+#' @param key_cols columns identifying the unit the chain runs on (e.g.
+#'   sample and treatment) -- the cascade stays within one unit
+#' @param trait_col column in failed_flags naming the failed trait
+qc_sequential_cascade <- function(failed_flags, chain, key_cols,
+                                   trait_col = "trait_flagged") {
+  if (nrow(failed_flags) == 0) return(failed_flags[0, ] %>% mutate(check = character(0)))
+
+  in_chain <- failed_flags[failed_flags[[trait_col]] %in% chain, , drop = FALSE]
+  if (nrow(in_chain) == 0) return(in_chain %>% mutate(check = character(0)))
+
+  purrr::pmap_dfr(in_chain[, c(key_cols, trait_col)], function(...) {
+    row <- list(...)
+    failed_trait <- row[[trait_col]]
+    pos <- match(failed_trait, chain)
+    downstream <- chain[seq_len(length(chain)) > pos]
+    if (length(downstream) == 0) return(NULL)
+
+    tibble::tibble(
+      !!!row[key_cols],
+      trait_flagged = downstream,
+      upstream_failure = failed_trait,
+      position_in_chain = match(downstream, chain),
+      reason = sprintf("downstream of failed '%s' in a sequential assay -- suspect by position, verify against the assay's own arithmetic before acting",
+                       failed_trait),
+      check = "sequential_cascade"
+    )
+  }) %>%
+    distinct()
+}
+
+# ---- 8. Trait-trait covariation flag ---------------------------------------
 
 #' Flag points far from a robust (Huber M-estimation) SMA fit between two
 #' traits expected to strongly covary (e.g. N vs LMA in the leaf economics
