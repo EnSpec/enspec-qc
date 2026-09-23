@@ -192,7 +192,87 @@ qc_distribution_outliers <- function(df, group_var, value_col, id_cols,
     arrange(desc(abs(robust_z)))
 }
 
-# ---- 5. Trait-trait covariation flag ---------------------------------------
+# ---- 5. Assay replicate precision (relative error) ------------------------
+
+#' Flag assay results whose own replicate scatter is too large relative to
+#' the value -- i.e. the measurement disagreed with itself.
+#'
+#' Distinct from every other check here: it needs no comparison to other
+#' samples, other groups or any literature range. An assay run in triplicate
+#' that reports a mean and an SD carries its own precision estimate, and a
+#' coefficient of variation above what the method can justify means that
+#' result is unreliable regardless of how plausible the value looks.
+#'
+#' @param value_col the assay result (a mean over replicates)
+#' @param error_col the matching dispersion (SD across those replicates)
+#' @param max_cv flag when error_col / value_col exceeds this. Set it from
+#'   what the assay can actually achieve, per project.
+qc_relative_error <- function(df, value_col, error_col, id_cols, max_cv = 0.10) {
+  df %>%
+    filter(!is.na(.data[[value_col]]), !is.na(.data[[error_col]]),
+           .data[[value_col]] > 0) %>%
+    mutate(cv = .data[[error_col]] / .data[[value_col]]) %>%
+    filter(cv > max_cv) %>%
+    select(all_of(id_cols), all_of(value_col), all_of(error_col), cv) %>%
+    mutate(trait_flagged = value_col,
+           max_cv = max_cv,
+           check = "relative_error") %>%
+    arrange(desc(cv))
+}
+
+# ---- 6. QC blank drift across sequential processing steps -----------------
+
+#' Flag a QC blank that GAINS weight across a sequence of processing steps.
+#'
+#' For a sequential gravimetric assay (ANKOM fiber being the motivating
+#' case: NDF then ADF then ADL), an empty blank bag carried through the same
+#' washes should only ever lose weight. If it gains, the bag leaked and took
+#' on material -- which means it was shedding sample material too, and
+#' everything sharing that batch is suspect. This is a BATCH-level signal,
+#' not a per-sample one: the consequence of a leaking blank falls on every
+#' sample processed alongside it, so the caller is responsible for
+#' propagating the flag to the batch.
+#'
+#' Reports both comparisons, because they answer different questions:
+#'   - change from tare: did the blank end up heavier than it started
+#'   - change from the previous step: which wash was it that added weight
+#'
+#' @param tare_col the blank's initial empty weight
+#' @param step_cols weights after each step, IN PROCESSING ORDER
+#' @param increase_threshold fractional gain treated as bad data (0.01 = 1%,
+#'   a threshold in common use). Any gain at all is reported regardless, since
+#'   a blank should not gain weight even slightly.
+qc_blank_drift <- function(df, id_cols, tare_col, step_cols,
+                            increase_threshold = 0.01) {
+  purrr::map_dfr(seq_len(nrow(df)), function(i) {
+    tare <- df[[tare_col]][i]
+    if (is.na(tare) || tare <= 0) return(NULL)
+
+    weights <- vapply(step_cols, function(cl) as.numeric(df[[cl]][i]), numeric(1))
+    prev <- c(tare, weights[-length(weights)])
+
+    tibble::tibble(
+      df[i, id_cols, drop = FALSE],
+      step = step_cols,
+      step_order = seq_along(step_cols),
+      weight = weights,
+      tare = tare,
+      pct_change_from_tare = 100 * (weights / tare - 1),
+      pct_change_from_previous = 100 * (weights / prev - 1)
+    )
+  }) %>%
+    mutate(
+      gained_weight = pct_change_from_tare > 0 | pct_change_from_previous > 0,
+      exceeds_threshold = pmax(pct_change_from_tare, pct_change_from_previous, na.rm = TRUE) >
+        100 * increase_threshold,
+      increase_threshold_pct = 100 * increase_threshold,
+      check = "blank_drift"
+    ) %>%
+    filter(gained_weight) %>%
+    arrange(desc(pmax(pct_change_from_tare, pct_change_from_previous, na.rm = TRUE)))
+}
+
+# ---- 7. Trait-trait covariation flag ---------------------------------------
 
 #' Flag points far from a robust (Huber M-estimation) SMA fit between two
 #' traits expected to strongly covary (e.g. N vs LMA in the leaf economics
