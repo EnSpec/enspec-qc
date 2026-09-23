@@ -35,11 +35,22 @@ qc_write_log <- function(flag_df, out_dir, check_name) {
 #'
 #' @param flag_list named list of flag data frames (as returned by the
 #'   qc_* functions in this package)
-qc_build_report <- function(flag_list, out_dir) {
+#' @param unit_col optional column naming the real unit of observation (e.g.
+#'   "sample_name"). Flag tables are often at a broadcast grain -- one bad
+#'   per-sample chemistry value becomes one row per spectrum for that sample
+#'   -- so a raw row count badly overstates how many distinct problems there
+#'   are. When this column is present, the summary reports both.
+qc_build_report <- function(flag_list, out_dir, unit_col = NULL) {
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
   check_counts <- bind_rows(lapply(names(flag_list), function(nm) {
-    tibble::tibble(check_name = nm, n_flagged = nrow(flag_list[[nm]]))
+    df <- flag_list[[nm]]
+    n_units <- if (!is.null(unit_col) && nrow(df) > 0 && unit_col %in% names(df)) {
+      length(unique(df[[unit_col]]))
+    } else {
+      NA_integer_
+    }
+    tibble::tibble(check_name = nm, n_flagged = nrow(df), n_distinct_units = n_units)
   }))
 
   write.csv(check_counts, file.path(out_dir, "qc_check_summary.csv"), row.names = FALSE)

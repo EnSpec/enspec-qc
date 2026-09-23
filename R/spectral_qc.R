@@ -123,13 +123,39 @@ qc_spectral_out_of_range <- function(df, wave_cols, id_cols,
 #' thin group, and it is exactly why qc_spectral_pca_flags() pools its
 #' distance distribution globally instead. Run both and compare.
 #'
+#' Two ways to decide what counts as an outlier, set by `method`:
+#'
+#'   "absolute" (default) - flag when the angle to the reference exceeds
+#'      `angle_max_deg`. Recommended. The angle is a physically meaningful
+#'      quantity on a fixed scale, so a threshold in degrees means the same
+#'      thing across projects and across reruns, and it is something a data
+#'      user can actually interpret.
+#'   "robust_z" - flag when the angle is a robust-z outlier among the other
+#'      angles in its own group. Adapts to how tightly a given group happens
+#'      to agree, but at typical replicate counts that is a liability rather
+#'      than a feature: with 6 scans the MAD is computed on 5 angles, so the
+#'      scale estimate is mostly noise, and a group whose scans agree
+#'      unusually tightly will flag a perfectly good sibling for being
+#'      slightly less tight. Kept for comparison, not recommended as the
+#'      primary test.
+#'
+#' Either way the test is one-sided: only scans FURTHER from the reference
+#' than expected are flagged. A small angle means good agreement.
+#'
 #' @param group_var column defining "same expected spectrum" (e.g. a
 #'   combined sample x treatment column)
 #' @param reference "medoid" or "albedo" -- see above
+#' @param method "absolute" or "robust_z" -- see above
+#' @param angle_max_deg absolute angle threshold in DEGREES, used when
+#'   method = "absolute". Set this per project from the observed
+#'   within-group distribution, not from a default.
 qc_spectral_group_outliers <- function(df, group_var, wave_cols, id_cols,
                                         min_n = 4, z_threshold = 3,
-                                        reference = c("medoid", "albedo")) {
+                                        reference = c("medoid", "albedo"),
+                                        method = c("absolute", "robust_z"),
+                                        angle_max_deg = 1) {
   reference <- match.arg(reference)
+  method <- match.arg(method)
   wave_mat <- as.matrix(df[, wave_cols])
 
   spectral_angle <- function(a, b) {
@@ -181,7 +207,7 @@ qc_spectral_group_outliers <- function(df, group_var, wave_cols, id_cols,
       robust_z[ref_i] <- 0
 
       .x %>% mutate(
-        spectral_angle_rad = angles,
+        spectral_angle_deg = angles * 180 / pi,
         angle_robust_z = robust_z,
         is_reference = seq_len(nrow(.x)) == ref_i,
         reference_method = reference,
@@ -189,27 +215,26 @@ qc_spectral_group_outliers <- function(df, group_var, wave_cols, id_cols,
       )
     }) %>%
     ungroup() %>%
-    # One-sided on purpose. This is a distance from a reference, so only the
-    # upper tail means anything: a large negative z is a scan that agrees
-    # unusually WELL with the reference, which is not a defect. That matters
-    # more with a real reference scan than it did with a synthetic median --
-    # the medoid's nearest neighbours sit structurally close to it, so a
-    # two-sided test manufactures false positives out of the best-behaved
-    # scans in each group. Matches Henry's stated threshold ("robust z > 3").
-    filter(!is_reference, angle_robust_z > z_threshold)
+    # One-sided either way: a SMALL angle means the scan agrees well with the
+    # reference, which is never a defect.
+    filter(!is_reference,
+           if (method == "absolute") spectral_angle_deg > angle_max_deg
+           else angle_robust_z > z_threshold)
 
   if (nrow(results) == 0) {
     return(df[0, c(id_cols, group_var)] %>%
-             mutate(spectral_angle_rad = numeric(0), angle_robust_z = numeric(0),
+             mutate(spectral_angle_deg = numeric(0), angle_robust_z = numeric(0),
                     reference_method = character(0), reference_spectrum = character(0),
                     check = character(0)))
   }
 
   results %>%
-    select(all_of(id_cols), all_of(group_var), spectral_angle_rad, angle_robust_z,
+    select(all_of(id_cols), all_of(group_var), spectral_angle_deg, angle_robust_z,
            reference_method, reference_spectrum) %>%
-    mutate(check = "spectral_group_outlier") %>%
-    arrange(desc(abs(angle_robust_z)))
+    mutate(check = "spectral_group_outlier",
+           flag_method = method,
+           threshold = if (method == "absolute") angle_max_deg else z_threshold) %>%
+    arrange(desc(spectral_angle_deg))
 }
 
 # ---- 4. Single-band / band-range threshold --------------------------------
