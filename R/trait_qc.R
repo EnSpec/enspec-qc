@@ -13,6 +13,9 @@
 #   3. Magnitude/decimal-shift check against a group median -> qc_magnitude_shift()
 #   4. Distribution-based flag (robust z, within group) -> qc_distribution_outliers()
 #   5. Trait-trait covariation flag (robust SMA residuals) -> qc_covariation_outliers()
+#   6. Reported-vs-recomputed check on spreadsheet-derived values, which
+#      catches broken arithmetic that every other check here is blind to
+#      -> qc_derived_mismatch()
 #
 # Every function takes the "sampling unit" as a caller-supplied grouping
 # variable (or variables, via a single group_var column you build upstream,
@@ -321,7 +324,58 @@ qc_sequential_cascade <- function(failed_flags, chain, key_cols,
     distinct()
 }
 
-# ---- 8. Trait-trait covariation flag ---------------------------------------
+# ---- 8. Reported vs. independently recomputed derived values ---------------
+
+#' Flag a reported derived value that disagrees with the same quantity
+#' recomputed from the raw measurements it is supposed to come from.
+#'
+#' Wet-lab assay results usually reach us as a spreadsheet in which the raw
+#' measurements (weights, absorbances) are typed in and every reported trait
+#' is a formula over them. That arrangement fails in a way no bounds check,
+#' group comparison or literature range can see: the arithmetic itself breaks
+#' while the output stays perfectly plausible. A dragged fill-handle, an
+#' inserted row or a partial copy shifts a relative cell reference by one
+#' row, so a formula silently reads its neighbour's weight. The result sits
+#' comfortably inside every plausible range and matches its own batch, and
+#' nothing downstream can tell (the ANKOM fiber sheets for Mill Test 2024
+#' carried exactly this -- Henry, 2026-09-24).
+#'
+#' The check is to not trust the derived column at all: recompute it from the
+#' raw inputs using the assay's documented protocol, and compare. Any
+#' disagreement beyond floating-point noise is a spreadsheet defect, because
+#' both numbers claim to be the same function of the same inputs. Note this
+#' also catches a stale cached value, where the formula is right but the file
+#' was last saved without recalculating -- readers like readxl return the
+#' cache, not the formula.
+#'
+#' Worth doing wherever raw inputs are available alongside derived outputs;
+#' it is cheap and its failure mode is invisible to everything else.
+#'
+#' @param reported_col the derived value as the source sheet reports it
+#' @param recomputed_col the same quantity derived in code from raw inputs
+#' @param tolerance largest absolute difference treated as floating-point
+#'   noise rather than a defect. In the reported column's own units.
+qc_derived_mismatch <- function(df, id_cols, reported_col, recomputed_col,
+                                 tolerance = 1e-6) {
+  df %>%
+    filter(!is.na(.data[[recomputed_col]])) %>%
+    mutate(
+      reported = .data[[reported_col]],
+      recomputed = .data[[recomputed_col]],
+      difference = .data[[reported_col]] - .data[[recomputed_col]]
+    ) %>%
+    filter(is.na(reported) | abs(difference) > tolerance) %>%
+    select(all_of(id_cols), reported, recomputed, difference) %>%
+    mutate(
+      trait_flagged = reported_col,
+      tolerance = tolerance,
+      reason = "reported value disagrees with recomputation from raw inputs -- the source sheet's arithmetic is wrong (shifted cell reference) or its cached value is stale",
+      check = "derived_mismatch"
+    ) %>%
+    arrange(desc(abs(difference)))
+}
+
+# ---- 9. Trait-trait covariation flag ---------------------------------------
 
 #' Flag points far from a robust (Huber M-estimation) SMA fit between two
 #' traits expected to strongly covary (e.g. N vs LMA in the leaf economics
