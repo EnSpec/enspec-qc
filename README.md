@@ -132,6 +132,68 @@ is general; what counts as a sampling unit or a plausible value is not.
   dataset is designed (paired oven trays, one scanned and one weighed) but
   not yet run — see the Mill Test CLAUDE.md. Not attempted here.
 
+- **Taxon harmonization** (`R/taxon_harmonize.R`) — runs **before** the checks
+  above, or beside them: the QC grouping variable is usually taxon, so
+  harmonization has to be settled first. Generalized from the vetted GCFR
+  pipeline (`Data_Workflow_2_Taxonomic_Cleaning`), the most recently reviewed
+  of several versions of this workflow.
+  1. `taxon_standardize_names()` -- normalizes the things that make otherwise
+     identical names fail to match: `var` missing its period, `cf.crassa` with
+     no space, doubled spaces. Also maps field placeholders (`Plot70sp1`) to an
+     explicit unknown, so they can't be fuzzy-matched to some unrelated species.
+  2. `taxon_strip_indet()` -- strips `sp.` / `sp 1` / `species` so a
+     genus-only record resolves to its genus, while **never** touching
+     `subsp.` / `var.` / `cf.` (note `subsp` contains `sp`). A named function
+     rather than an inline gsub because applying it to some inputs and not
+     others left GCFR's releve names unresolved through two pipeline passes.
+  3. `taxon_apply_overrides()` -- botanist-verified corrections from a
+     reviewable table instead of `case_when` arms buried in a script. Reports
+     which rules fired and **warns about rules that matched nothing**, since
+     that means either the upstream data was fixed or the rule quietly broke.
+  4. `taxon_check_against_checklist()` -- reports names absent from a regional
+     flora. Flag-only and informational: a regional authority is right for its
+     region but is not a global one, so absence means "look", never "wrong".
+  5. `taxon_match_wfo()` -- resolves against a WFO static backbone, then hands
+     off to `taxon_join_one_to_one()`, which **refuses to join unless the
+     relationship really is 1:1**. This is the important part. GCFR joined
+     WFO output on a natural key that wasn't unique and quietly turned 9,547
+     rows into 27,337 (and 2,509 into 7,431), which wasn't noticed until a
+     later workflow. `taxon_join_one_to_one()` is separated out so it can be
+     tested without a 950 MB backbone and reused for any matcher with the same
+     one-row-per-input contract (GBIF, TNRS, a regional lookup).
+  6. `taxon_classify_recovery()` -- classifies every record as `wfo_matched` /
+     `recovered_family_only` / `flagged_non_taxonomic_entry` /
+     `unresolved_morphotype`. Those are four different data-quality
+     situations and a single `NA` collapses them. Nothing is dropped.
+  7. `taxon_check_infraspecific_loss()` -- flags records that carried
+     `subsp.`/`var.`/`cf.` before harmonization and not after. A standing
+     guard for a failure a GCFR reviewer found, where epithets silently
+     disappeared from some records and columns but not others. Losing one can
+     be legitimate; it should be a counted decision, not a surprise at review.
+
+- **WFO backbone currency** (`R/wfo_backbone.R`) — WFO ships its backbone as a
+  dated static file, and it is very easy to keep resolving names against
+  whichever copy is on the drive, for years: the file works, matching
+  succeeds, nothing errors, and the names are simply out of date. This came up
+  in review (Henry, 2026-09-24).
+  - `wfo_backbone_version()` parses `classification_v.YYYY.M[M].csv` into a
+    version and a release date. **Always record this in your provenance** — a
+    harmonized name is only reproducible if the backbone that produced it is
+    identifiable.
+  - `wfo_backbone_check()` is **offline-first by design**. Its strongest check
+    needs no network: if a newer backbone is already sitting in the same
+    directory as the one in use, that is the mistake, stated plainly. It also
+    warns when the backbone in use is older than `max_age_months` (default 18),
+    which catches a lab-wide stale copy without needing to know the newest
+    release. Set `latest_known` in the project config to make the check exact,
+    and bump it when someone checks the download page.
+  - **There is deliberately no scraper.** `worldfloraonline.org/downloadData`
+    is HTML with no version API, and as of 2026-09-24 its TLS chain fails to
+    verify from at least one lab machine (`curl`: "unable to verify the first
+    certificate"), so a scraper would be both untestable and a runtime
+    dependency on a host we can't reliably reach. Zenodo carries WFO's
+    descriptive record but not the periodic versioned data releases.
+
 - **Reporting/provenance** (`R/qc_report.R`): `qc_write_log()`,
   `qc_build_report()` (a per-check counts summary -- deliberately does
   *not* try to merge flags from different grains into one per-id column;
