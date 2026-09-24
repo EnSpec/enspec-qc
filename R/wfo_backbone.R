@@ -142,6 +142,18 @@ wfo_backbone_check <- function(path, latest_known = NULL,
                        WFO_DOWNLOAD_URL))
   }
 
+  # Absent `latest_known`, this function cannot actually establish currency --
+  # only that nothing newer is on disk and the file isn't ancient. Say so every
+  # time rather than reporting a clean bill of health: "may be out of date" is
+  # the honest state, and it is the one worth flagging (Henry, 2026-09-24).
+  # Carried as severity "note" so it stays distinguishable from a real problem.
+  if (is.null(latest_known) && !is.na(in_use$version)) {
+    findings[["unverified"]] <- tibble::tibble(
+      issue = "currency_unverified", severity = "note",
+      detail = sprintf("v.%s may be out of date -- currency was NOT verified against WFO, which publishes no machine-readable version index. Confirm at %s and record it as `latest_known` in the project config to make this check exact.",
+                       in_use$version, WFO_DOWNLOAD_URL))
+  }
+
   findings <- if (length(findings) == 0) {
     tibble::tibble(issue = character(0), severity = character(0),
                    detail = character(0))
@@ -149,12 +161,17 @@ wfo_backbone_check <- function(path, latest_known = NULL,
     bind_rows(findings)
   }
 
-  if (nrow(findings) > 0) {
-    for (i in seq_len(nrow(findings))) {
+  # Real problems warn; the unverifiable-by-construction note only messages, so
+  # it informs without training the reader to ignore warnings.
+  for (i in seq_len(nrow(findings))) {
+    if (findings$severity[i] == "note") {
+      message(sprintf("WFO backbone: %s", findings$detail[i]))
+    } else {
       warning(sprintf("WFO backbone: %s", findings$detail[i]), call. = FALSE)
     }
-  } else {
-    message(sprintf("WFO backbone v.%s (%s) -- current as far as this check can tell.",
+  }
+  if (!any(findings$severity != "note")) {
+    message(sprintf("WFO backbone in use: v.%s (%s). Record this with the output.",
                     in_use$version, basename(path)))
   }
 
