@@ -42,7 +42,40 @@ is general; what counts as a sampling unit or a plausible value is not.
   5. `qc_covariation_outliers()` -- robust SMA regression between two
      traits expected to strongly covary (e.g. N vs. LMA); flags points far
      from the fit. Flag-only.
-  6. `qc_try_bounds()` (`R/try_reference.R`) -- pulls min/max literature
+  6. `qc_relative_error()` -- flags a result whose own reported dispersion
+     (an SD over the assay's duplicate/triplicate measures) is too large a
+     fraction of the value. Asks "did the assay agree with itself", which no
+     comparison against other samples can answer.
+  7. `qc_blank_drift()` -- flags a QC blank that **gains** weight across a
+     sequence of gravimetric processing steps. A blank should only ever lose
+     weight; a gain means it leaked and took on material, so it was shedding
+     sample material too. This is a **batch-level** signal -- the caller is
+     responsible for propagating it to everything that shared the batch.
+  8. `qc_sequential_cascade()` -- propagates a failure forward through an
+     assay whose stages each operate on the residue of the last (ANKOM fiber:
+     NDF, then ADF, then ADL). Deliberately precautionary: it flags on
+     position in the chain, not on evidence the downstream value is itself
+     wrong, so check the assay's arithmetic before removing anything on this
+     basis.
+  9. `qc_derived_mismatch()` -- compares a spreadsheet-reported derived value
+     against the same quantity recomputed in code from the raw measurements
+     it comes from. **This catches a failure mode nothing else here can see.**
+     When results arrive as a workbook whose derived columns are formulas over
+     typed-in measurements, the arithmetic itself can break while the output
+     stays perfectly plausible: a dragged fill-handle or an inserted row
+     shifts a relative cell reference, so a formula silently reads its
+     neighbour's weight. The result sits inside every bound and matches its
+     own batch, so bounds, group, distribution and literature checks all pass
+     it. The Mill Test 2024 ANKOM sheets carried exactly this -- one corrupted
+     value was impossible and got caught, a second was an 11.6 mg/g lignin
+     error that looked entirely normal. It also catches a stale cached value,
+     where the formula is right but the file was saved without recalculating
+     (readers like `readxl` return the cache, not the formula). Worth running
+     wherever raw inputs sit alongside derived outputs. The stronger move,
+     where the protocol is documented, is to **carry the recomputed value
+     forward** and let this check exist only to report the sheet's defects --
+     then a future reference slip cannot change a published number.
+  10. `qc_try_bounds()` (`R/try_reference.R`) -- pulls min/max literature
      ranges for a set of traits out of a bulk TRY database export, to be
      used as **flag-only** bounds. Never feed these into a removal policy
      (see the note above). Check `UnitName` on what comes back: some TRY
