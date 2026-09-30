@@ -284,8 +284,12 @@ qc_spectral_band_threshold <- function(df, wave_cols, id_cols, band,
     rowMeans(as.matrix(df[, wave_cols[sel], drop = FALSE]), na.rm = TRUE)
   }
 
-  bad <- !is.na(vals) &
-    ((!is.null(upper) & vals > upper) | (!is.null(lower) & vals < lower))
+  # Test each bound only when it is supplied: `vals > NULL` is logical(0),
+  # which would silently turn the whole expression into logical(0) and flag
+  # nothing whenever only one of upper/lower is given.
+  above <- if (is.null(upper)) FALSE else vals > upper
+  below <- if (is.null(lower)) FALSE else vals < lower
+  bad <- !is.na(vals) & (above | below)
 
   df[bad, id_cols, drop = FALSE] %>%
     mutate(
