@@ -3,9 +3,10 @@
 Shared, project-agnostic trait and spectral QC functions for EnSpec lab
 data releases (field/lab trait data + proximal/lab spectroscopy).
 
-**Status:** local only, not yet pushed to a remote. First real
-implementation was built alongside the Mill Test 2024 EcoSIS deposit
-(2026-09); adopted from there into other projects as they need it.
+**Status:** public at https://github.com/EnSpec/enspec-qc; used by
+sourcing the `R/` files (not yet an installable package). First built
+alongside the Mill Test 2024 EcoSIS deposit (2026-09) and adopted from there
+into other projects (ACRES) as they need it.
 
 ## Design
 
@@ -106,7 +107,11 @@ is general; what counts as a sampling unit or a plausible value is not.
      dried-ground DAAC product drops everything with R350 ≥ 0.9; dry leaf
      powder sits far below that, so a value that high means the white
      reference or an empty puck got measured. More direct than
-     `qc_spectral_flat()` for that specific failure — keep both.
+     `qc_spectral_flat()` for that specific failure — keep both. The same
+     function with a `lower` bound catches the opposite failure, the probe
+     not on a sample (in the air, over an empty well): dry plant powder is
+     bright on the NIR/SWIR1 plateau, so ACRES and Mill Test flag a mean
+     R1100–1300 below 0.3 (deliberate bad scans read 0.01–0.15).
   5. `qc_spectral_pca_flags()` -- flags spectra **for manual review** at two
      levels: each replicate against its own sample centroid, and each sample
      centroid against its group's. The PCA is fit **once over the whole
@@ -125,6 +130,19 @@ is general; what counts as a sampling unit or a plausible value is not.
      necessarily uncorrected; check before trusting it.**
      `qc_splice_defaults()` holds ASD and SVC/.sig boundaries and treats
      `"svc"` and `"sig"` as the same instrument.
+
+- **Spectral transforms** (`R/spectral_transforms.R`) -- `snv()` and
+  `snv_over_range()`, standard normal variate (Barnes et al. 1989): each
+  spectrum centered on its own mean and scaled by its own SD over a chosen
+  wavelength range. Run the **shape** checks (`qc_spectral_group_outliers()`,
+  `qc_spectral_pca_flags()`) on SNV spectra so they compare spectral shape
+  rather than the brightness and scatter differences that particle size and
+  packing put between wells (Henry, 2026-09-30). Keep the **physical** checks
+  (flat, out of range, band thresholds, splice jumps) on reflectance. Angle
+  thresholds do not carry over between reflectance and SNV (SNV angles are
+  larger), so recalibrate from the observed distribution when switching. The
+  project config records the method and range, e.g.
+  `shape_qc_transform <- list(method = "snv", range = c(400, 2450))`.
 
   **Known gap** (Henry, 2026-09-20): the most useful spectral check would
   be a moisture-index-style flag for incomplete drying, but validating one
